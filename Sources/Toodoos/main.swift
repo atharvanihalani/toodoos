@@ -76,7 +76,7 @@ enum Discord {
 
 // MARK: - Floating Input Window
 
-class FloatingInputWindow: NSWindow {
+class FloatingInputWindow: NSPanel {
     private let inputField = NSTextField()
     private let statusLabel = NSTextField(labelWithString: "")
     private var onSubmit: ((String) -> Void)?
@@ -91,7 +91,7 @@ class FloatingInputWindow: NSWindow {
 
         super.init(
             contentRect: NSRect(x: x, y: y, width: width, height: height),
-            styleMask: [.borderless],
+            styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered,
             defer: false
         )
@@ -101,7 +101,9 @@ class FloatingInputWindow: NSWindow {
         level = .floating
         hasShadow = true
         isMovableByWindowBackground = false
-        collectionBehavior = [.canJoinAllSpaces, .stationary]
+        hidesOnDeactivate = false
+        collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary]
+        isFloatingPanel = true
 
         setupUI()
     }
@@ -154,19 +156,35 @@ class FloatingInputWindow: NSWindow {
         let y = screenFrame.maxY - height - 12
         setFrame(NSRect(x: x, y: y, width: width, height: height), display: true)
 
-        // Temporarily become a regular app to guarantee activation, then hide from dock again
-        NSApp.setActivationPolicy(.regular)
         orderFrontRegardless()
         makeKeyAndOrderFront(nil)
-        NSRunningApplication.current.activate(options: .activateIgnoringOtherApps)
         makeFirstResponder(inputField)
 
-        // Switch back to accessory (no dock icon) after a brief delay
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-            NSApp.setActivationPolicy(.accessory)
-        }
+        // Retry focus assertion — the panel may need a couple run loop cycles
+        assertFocus()
 
         log("Input window shown")
+    }
+
+    func focusInput() {
+        makeKeyAndOrderFront(nil)
+        makeFirstResponder(inputField)
+        assertFocus()
+    }
+
+    private func assertFocus() {
+        var attempts = 0
+        Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { [weak self] timer in
+            guard let self = self, self.isVisible else { timer.invalidate(); return }
+            attempts += 1
+            if self.isKeyWindow && self.firstResponder === self.inputField {
+                timer.invalidate()
+            } else {
+                self.makeKeyAndOrderFront(nil)
+                self.makeFirstResponder(self.inputField)
+            }
+            if attempts >= 10 { timer.invalidate() }
+        }
     }
 
     func showSuccess() {
@@ -212,15 +230,16 @@ class HotKeyManager {
     static func register(callback: @escaping () -> Void) {
         self.callback = callback
 
-        // Check accessibility
-        let trusted = AXIsProcessTrustedWithOptions(
-            [kAXTrustedCheckOptionPrompt.takeUnretainedValue(): true] as CFDictionary
-        )
+        // Check accessibility silently — don't prompt every launch
+        let trusted = AXIsProcessTrusted()
         log("Accessibility trusted: \(trusted)")
 
         if !trusted {
             log("WARNING: Not trusted for accessibility. Hotkey will not work.")
-            // Poll for accessibility permission
+            // Prompt once, then poll silently
+            AXIsProcessTrustedWithOptions(
+                [kAXTrustedCheckOptionPrompt.takeUnretainedValue(): true] as CFDictionary
+            )
             pollForAccessibility()
             return
         }
@@ -271,7 +290,7 @@ class HotKeyManager {
                     let noOpt = !flags.contains(.maskAlternate)
                     let noShift = !flags.contains(.maskShift)
 
-                    if keyCode == 11 && hasCmd && hasCtrl && noOpt && noShift {
+                    if keyCode == 17 && hasCmd && hasCtrl && noOpt && noShift {
                         log("Hotkey detected!")
                         DispatchQueue.main.async {
                             HotKeyManager.callback?()
@@ -338,7 +357,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         let menu = NSMenu()
-        menu.addItem(withTitle: "New Todo  ⌃⌘B", action: #selector(showInput), keyEquivalent: "")
+        menu.addItem(withTitle: "New Todo  ⌃⌘T", action: #selector(showInput), keyEquivalent: "")
         menu.addItem(.separator())
         menu.addItem(withTitle: "Open Toodoos File", action: #selector(openFile), keyEquivalent: "")
         menu.addItem(withTitle: "Edit Config", action: #selector(openConfig), keyEquivalent: "")
@@ -348,6 +367,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func showInput() {
+        if inputWindow.isVisible {
+            inputWindow.focusInput()
+            return
+        }
         inputWindow.show { [weak self] text in
             TodoStorage.save(text)
             Discord.send(text)
