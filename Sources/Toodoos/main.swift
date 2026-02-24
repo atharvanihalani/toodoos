@@ -5,20 +5,7 @@ import Carbon
 
 struct Config {
     static let todoFile = NSHomeDirectory() + "/.toodoos.md"
-    static let configFile = NSHomeDirectory() + "/.toodoos.conf"
     static let logFile = NSHomeDirectory() + "/.toodoos.log"
-
-    static var discordWebhookURL: String? {
-        guard let data = try? String(contentsOfFile: configFile, encoding: .utf8) else { return nil }
-        for line in data.components(separatedBy: "\n") {
-            let trimmed = line.trimmingCharacters(in: .whitespaces)
-            if trimmed.hasPrefix("webhook=") {
-                let url = String(trimmed.dropFirst("webhook=".count))
-                return url.isEmpty ? nil : url
-            }
-        }
-        return nil
-    }
 }
 
 func log(_ msg: String) {
@@ -51,26 +38,32 @@ enum TodoStorage {
             handle.closeFile()
         }
     }
-}
 
-// MARK: - Discord
+    static func load() -> [(timestamp: String, text: String)] {
+        guard let content = try? String(contentsOfFile: Config.todoFile, encoding: .utf8) else {
+            return []
+        }
+        var entries: [(timestamp: String, text: String)] = []
+        for line in content.components(separatedBy: "\n") {
+            // Match: - [ISO8601_TIMESTAMP] text
+            guard line.hasPrefix("- [") else { continue }
+            let after = line.dropFirst(3) // drop "- ["
+            guard let closeBracket = after.firstIndex(of: "]") else { continue }
+            let timestamp = String(after[after.startIndex..<closeBracket])
+            let textStart = after.index(closeBracket, offsetBy: 2, limitedBy: after.endIndex) ?? after.endIndex
+            let text = String(after[textStart...]).trimmingCharacters(in: .whitespaces)
+            guard !text.isEmpty else { continue }
+            entries.append((timestamp: timestamp, text: text))
+        }
+        return entries
+    }
 
-enum Discord {
-    static func send(_ text: String) {
-        guard let urlString = Config.discordWebhookURL,
-              let url = URL(string: urlString) else { return }
-
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-
-        let timestamp = ISO8601DateFormatter().string(from: Date())
-        let payload: [String: Any] = [
-            "content": "**\(timestamp)**\n\(text)"
-        ]
-        request.httpBody = try? JSONSerialization.data(withJSONObject: payload)
-
-        URLSession.shared.dataTask(with: request).resume()
+    static func rewrite(_ entries: [(timestamp: String, text: String)]) {
+        var content = "# Toodoos\n\n"
+        for entry in entries {
+            content += "- [\(entry.timestamp)] \(entry.text)\n"
+        }
+        try? content.write(toFile: Config.todoFile, atomically: true, encoding: .utf8)
     }
 }
 
@@ -220,6 +213,283 @@ class FloatingInputWindow: NSPanel {
     override var canBecomeMain: Bool { false }
 }
 
+// MARK: - Todo Row TextField
+
+// MARK: - Todo List Window
+
+class TodoListWindow: NSPanel {
+    private let scrollView = NSScrollView()
+    private let stackView = NSStackView()
+    private let emptyLabel = NSTextField(labelWithString: "no todos yet")
+    private var entries: [(timestamp: String, text: String)] = []
+    private var onDismiss: (() -> Void)?
+    private var focusedIndex: Int = 0
+    private var textFields: [NSTextField] = []
+
+    init() {
+        let width: CGFloat = 480
+        let height: CGFloat = 300
+
+        let screenFrame = NSScreen.main?.visibleFrame ?? .zero
+        let x = screenFrame.midX - width / 2
+        let y = screenFrame.maxY - height - 12
+
+        super.init(
+            contentRect: NSRect(x: x, y: y, width: width, height: height),
+            styleMask: [.borderless, .nonactivatingPanel],
+            backing: .buffered,
+            defer: false
+        )
+
+        isOpaque = false
+        backgroundColor = .clear
+        level = .floating
+        hasShadow = true
+        isMovableByWindowBackground = false
+        hidesOnDeactivate = false
+        collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary]
+        isFloatingPanel = true
+
+        setupUI()
+    }
+
+    private func setupUI() {
+        let container = NSVisualEffectView(frame: contentView!.bounds)
+        container.autoresizingMask = [.width, .height]
+        container.material = .hudWindow
+        container.state = .active
+        container.wantsLayer = true
+        container.layer?.cornerRadius = 10
+        container.layer?.masksToBounds = true
+        contentView?.addSubview(container)
+
+        stackView.orientation = .vertical
+        stackView.spacing = 0
+        stackView.translatesAutoresizingMaskIntoConstraints = false
+
+        scrollView.translatesAutoresizingMaskIntoConstraints = false
+        scrollView.drawsBackground = false
+        scrollView.hasVerticalScroller = true
+        scrollView.documentView = stackView
+        container.addSubview(scrollView)
+
+        emptyLabel.translatesAutoresizingMaskIntoConstraints = false
+        emptyLabel.font = .monospacedSystemFont(ofSize: 14, weight: .regular)
+        emptyLabel.textColor = NSColor.white.withAlphaComponent(0.3)
+        emptyLabel.alignment = .center
+        emptyLabel.isHidden = true
+        container.addSubview(emptyLabel)
+
+        NSLayoutConstraint.activate([
+            scrollView.topAnchor.constraint(equalTo: container.topAnchor, constant: 8),
+            scrollView.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            scrollView.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            scrollView.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -8),
+            stackView.topAnchor.constraint(equalTo: scrollView.contentView.topAnchor),
+            stackView.leadingAnchor.constraint(equalTo: scrollView.contentView.leadingAnchor),
+            stackView.trailingAnchor.constraint(equalTo: scrollView.contentView.trailingAnchor),
+            emptyLabel.centerXAnchor.constraint(equalTo: container.centerXAnchor),
+            emptyLabel.centerYAnchor.constraint(equalTo: container.centerYAnchor),
+        ])
+    }
+
+    func show(onDismiss: @escaping () -> Void) {
+        self.onDismiss = onDismiss
+        focusedIndex = 0
+        reload()
+
+        let width: CGFloat = 480
+        let rowHeight: CGFloat = 36
+        let padding: CGFloat = 16
+        let count = max(entries.count, 1)
+        let height = min(CGFloat(count) * rowHeight + padding, 400)
+
+        let screenFrame = NSScreen.main?.visibleFrame ?? .zero
+        let x = screenFrame.midX - width / 2
+        let y = screenFrame.maxY - height - 12
+        setFrame(NSRect(x: x, y: y, width: width, height: height), display: true)
+
+        orderFrontRegardless()
+        makeKeyAndOrderFront(nil)
+
+        // Focus the first todo
+        if !textFields.isEmpty {
+            makeFirstResponder(textFields[0])
+        }
+
+        log("Todo list shown with \(entries.count) entries")
+    }
+
+    func reload() {
+        entries = TodoStorage.load()
+        textFields.removeAll()
+        stackView.arrangedSubviews.forEach { $0.removeFromSuperview() }
+
+        if entries.isEmpty {
+            emptyLabel.isHidden = false
+            scrollView.isHidden = true
+            return
+        }
+
+        emptyLabel.isHidden = true
+        scrollView.isHidden = false
+
+        for (index, entry) in entries.enumerated() {
+            let row = makeRow(index: index, text: entry.text)
+            stackView.addArrangedSubview(row)
+            row.translatesAutoresizingMaskIntoConstraints = false
+            row.widthAnchor.constraint(equalTo: stackView.widthAnchor).isActive = true
+            row.heightAnchor.constraint(equalToConstant: 36).isActive = true
+        }
+    }
+
+    private func makeRow(index: Int, text: String) -> NSView {
+        let row = NSView()
+
+        let textField = NSTextField()
+        textField.translatesAutoresizingMaskIntoConstraints = false
+        textField.stringValue = text
+        textField.isBordered = false
+        textField.drawsBackground = false
+        textField.font = .monospacedSystemFont(ofSize: 13, weight: .regular)
+        textField.textColor = .white
+        textField.focusRingType = .none
+        textField.isEditable = true
+        textField.tag = index
+        textField.target = self
+        textField.action = #selector(handleEdit(_:))
+        textField.delegate = self
+        textField.cell?.sendsActionOnEndEditing = false
+        textField.lineBreakMode = .byTruncatingTail
+        textField.cell?.isScrollable = true
+        textField.cell?.wraps = false
+        textField.usesSingleLineMode = true
+        textField.maximumNumberOfLines = 1
+        row.addSubview(textField)
+        textFields.append(textField)
+
+        let deleteBtn = NSButton(title: "×", target: self, action: #selector(handleDelete(_:)))
+        deleteBtn.translatesAutoresizingMaskIntoConstraints = false
+        deleteBtn.isBordered = false
+        deleteBtn.font = .systemFont(ofSize: 16, weight: .medium)
+        deleteBtn.contentTintColor = NSColor.white.withAlphaComponent(0.3)
+        deleteBtn.tag = index
+        row.addSubview(deleteBtn)
+
+        NSLayoutConstraint.activate([
+            textField.leadingAnchor.constraint(equalTo: row.leadingAnchor, constant: 16),
+            textField.trailingAnchor.constraint(equalTo: deleteBtn.leadingAnchor, constant: -8),
+            textField.centerYAnchor.constraint(equalTo: row.centerYAnchor),
+            deleteBtn.trailingAnchor.constraint(equalTo: row.trailingAnchor, constant: -12),
+            deleteBtn.centerYAnchor.constraint(equalTo: row.centerYAnchor),
+            deleteBtn.widthAnchor.constraint(equalToConstant: 24),
+        ])
+
+        return row
+    }
+
+    private func focusRow(_ index: Int) {
+        guard index >= 0 && index < textFields.count else { return }
+        focusedIndex = index
+        makeFirstResponder(textFields[index])
+        // Scroll the focused row into view
+        if let row = textFields[index].superview {
+            scrollView.contentView.scrollToVisible(row.frame)
+        }
+    }
+
+    @objc private func handleEdit(_ sender: NSTextField) {
+        let index = sender.tag
+        guard index >= 0 && index < entries.count else { return }
+        let newText = sender.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        if newText.isEmpty {
+            entries.remove(at: index)
+            focusedIndex = min(index, entries.count - 1)
+        } else {
+            entries[index].text = newText
+            focusedIndex = index
+        }
+        TodoStorage.rewrite(entries)
+        reload()
+        resizeToFit()
+        if !textFields.isEmpty {
+            focusRow(max(0, min(focusedIndex, textFields.count - 1)))
+        }
+        log("Todo edited at index \(index)")
+    }
+
+    @objc private func handleDelete(_ sender: NSButton) {
+        let index = sender.tag
+        guard index >= 0 && index < entries.count else { return }
+        entries.remove(at: index)
+        TodoStorage.rewrite(entries)
+        focusedIndex = min(index, max(entries.count - 1, 0))
+        reload()
+        resizeToFit()
+        if !textFields.isEmpty {
+            focusRow(focusedIndex)
+        }
+        log("Todo deleted at index \(index)")
+    }
+
+    private func resizeToFit() {
+        let width: CGFloat = 480
+        let rowHeight: CGFloat = 36
+        let padding: CGFloat = 16
+        let count = max(entries.count, 1)
+        let height = min(CGFloat(count) * rowHeight + padding, 400)
+        let screenFrame = NSScreen.main?.visibleFrame ?? .zero
+        let x = screenFrame.midX - width / 2
+        let y = screenFrame.maxY - height - 12
+        setFrame(NSRect(x: x, y: y, width: width, height: height), display: true)
+    }
+
+    func dismiss() {
+        orderOut(nil)
+        onDismiss?()
+    }
+
+    override func cancelOperation(_ sender: Any?) {
+        dismiss()
+    }
+
+    override var canBecomeKey: Bool { true }
+    override var canBecomeMain: Bool { false }
+}
+
+extension TodoListWindow: NSTextFieldDelegate {
+    func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
+        if commandSelector == #selector(moveUp(_:)) {
+            focusRow(max(0, focusedIndex - 1))
+            return true
+        }
+        if commandSelector == #selector(moveDown(_:)) {
+            focusRow(min(textFields.count - 1, focusedIndex + 1))
+            return true
+        }
+        if commandSelector == #selector(cancelOperation(_:)) {
+            dismiss()
+            return true
+        }
+        // Cmd+Delete triggers deleteToBeginningOfLine:
+        if commandSelector == #selector(NSText.deleteToBeginningOfLine(_:)) {
+            if focusedIndex >= 0 && focusedIndex < entries.count {
+                entries.remove(at: focusedIndex)
+                TodoStorage.rewrite(entries)
+                focusedIndex = min(focusedIndex, max(entries.count - 1, 0))
+                reload()
+                resizeToFit()
+                if !textFields.isEmpty {
+                    focusRow(focusedIndex)
+                }
+                log("Todo deleted via Cmd+Delete at index \(focusedIndex)")
+            }
+            return true
+        }
+        return false
+    }
+}
+
 // MARK: - Global Hotkey via CGEvent Tap
 
 class HotKeyManager {
@@ -327,6 +597,8 @@ class HotKeyManager {
 class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem!
     private var inputWindow: FloatingInputWindow!
+    private var todoListWindow: TodoListWindow!
+    private var lastHotkeyTime: Date = .distantPast
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -334,16 +606,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         log("Toodoos starting up")
 
         inputWindow = FloatingInputWindow()
+        todoListWindow = TodoListWindow()
 
         setupMenuBar()
 
         HotKeyManager.register { [weak self] in
-            self?.showInput()
-        }
-
-        if !FileManager.default.fileExists(atPath: Config.configFile) {
-            try? "# Toodoos config\n# webhook=https://discord.com/api/webhooks/YOUR_WEBHOOK_URL\n"
-                .write(toFile: Config.configFile, atomically: true, encoding: .utf8)
+            self?.handleHotkey()
         }
 
         log("Toodoos ready")
@@ -358,12 +626,30 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         let menu = NSMenu()
         menu.addItem(withTitle: "New Todo  ⌃⌘T", action: #selector(showInput), keyEquivalent: "")
+        menu.addItem(withTitle: "View Todos  ⌃⌘T×2", action: #selector(showTodoList), keyEquivalent: "")
         menu.addItem(.separator())
         menu.addItem(withTitle: "Open Toodoos File", action: #selector(openFile), keyEquivalent: "")
-        menu.addItem(withTitle: "Edit Config", action: #selector(openConfig), keyEquivalent: "")
         menu.addItem(.separator())
         menu.addItem(withTitle: "Quit", action: #selector(quit), keyEquivalent: "q")
         statusItem.menu = menu
+    }
+
+    private func handleHotkey() {
+        let now = Date()
+        let elapsed = now.timeIntervalSince(lastHotkeyTime)
+        lastHotkeyTime = now
+
+        if elapsed < 0.4 {
+            // Double-tap: dismiss input, show todo list
+            inputWindow.dismiss()
+            showTodoList()
+        } else {
+            // Single tap: show input (or dismiss todo list first)
+            if todoListWindow.isVisible {
+                todoListWindow.dismiss()
+            }
+            showInput()
+        }
     }
 
     @objc private func showInput() {
@@ -373,9 +659,17 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
         inputWindow.show { [weak self] text in
             TodoStorage.save(text)
-            Discord.send(text)
             self?.inputWindow.showSuccess()
         }
+    }
+
+    @objc private func showTodoList() {
+        if todoListWindow.isVisible {
+            todoListWindow.dismiss()
+            return
+        }
+        inputWindow.dismiss()
+        todoListWindow.show { }
     }
 
     @objc private func openFile() {
@@ -383,10 +677,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             TodoStorage.save("first todo!")
         }
         NSWorkspace.shared.open(URL(fileURLWithPath: Config.todoFile))
-    }
-
-    @objc private func openConfig() {
-        NSWorkspace.shared.open(URL(fileURLWithPath: Config.configFile))
     }
 
     @objc private func quit() {
