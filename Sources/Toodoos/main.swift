@@ -225,6 +225,8 @@ class TodoListWindow: NSPanel {
     private var onDismiss: (() -> Void)?
     private var focusedIndex: Int = 0
     private var textFields: [NSTextField] = []
+    private var undoStack: [(timestamp: String, text: String, index: Int)] = []
+    private let maxUndoStackSize = 20
 
     init() {
         let width: CGFloat = 480
@@ -403,6 +405,7 @@ class TodoListWindow: NSPanel {
         guard index >= 0 && index < entries.count else { return }
         let newText = sender.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         if newText.isEmpty {
+            pushUndo(index: index)
             entries.remove(at: index)
             focusedIndex = min(index, entries.count - 1)
         } else {
@@ -421,6 +424,7 @@ class TodoListWindow: NSPanel {
     @objc private func handleDelete(_ sender: NSButton) {
         let index = sender.tag
         guard index >= 0 && index < entries.count else { return }
+        pushUndo(index: index)
         entries.remove(at: index)
         TodoStorage.rewrite(entries)
         focusedIndex = min(index, max(entries.count - 1, 0))
@@ -430,6 +434,29 @@ class TodoListWindow: NSPanel {
             focusRow(focusedIndex)
         }
         log("Todo deleted at index \(index)")
+    }
+
+    private func pushUndo(index: Int) {
+        guard index >= 0 && index < entries.count else { return }
+        let entry = entries[index]
+        undoStack.append((timestamp: entry.timestamp, text: entry.text, index: index))
+        if undoStack.count > maxUndoStackSize {
+            undoStack.removeFirst()
+        }
+    }
+
+    func performUndo() {
+        guard let deleted = undoStack.popLast() else { return }
+        let restoreIndex = min(deleted.index, entries.count)
+        entries.insert((timestamp: deleted.timestamp, text: deleted.text), at: restoreIndex)
+        TodoStorage.rewrite(entries)
+        focusedIndex = restoreIndex
+        reload()
+        resizeToFit()
+        if !textFields.isEmpty {
+            focusRow(focusedIndex)
+        }
+        log("Undo: restored todo at index \(restoreIndex)")
     }
 
     private func resizeToFit() {
@@ -471,9 +498,15 @@ extension TodoListWindow: NSTextFieldDelegate {
             dismiss()
             return true
         }
+        // Cmd+Z triggers undo:
+        if commandSelector == NSSelectorFromString("undo:") {
+            performUndo()
+            return true
+        }
         // Cmd+Delete triggers deleteToBeginningOfLine:
         if commandSelector == #selector(NSText.deleteToBeginningOfLine(_:)) {
             if focusedIndex >= 0 && focusedIndex < entries.count {
+                pushUndo(index: focusedIndex)
                 entries.remove(at: focusedIndex)
                 TodoStorage.rewrite(entries)
                 focusedIndex = min(focusedIndex, max(entries.count - 1, 0))
