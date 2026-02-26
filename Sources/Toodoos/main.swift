@@ -151,6 +151,7 @@ class FloatingInputWindow: NSPanel {
 
         orderFrontRegardless()
         makeKeyAndOrderFront(nil)
+        NSRunningApplication.current.activate()
         makeFirstResponder(inputField)
 
         // Retry focus assertion — the panel may need a couple run loop cycles
@@ -160,7 +161,9 @@ class FloatingInputWindow: NSPanel {
     }
 
     func focusInput() {
+        orderFrontRegardless()
         makeKeyAndOrderFront(nil)
+        NSRunningApplication.current.activate()
         makeFirstResponder(inputField)
         assertFocus()
     }
@@ -173,7 +176,9 @@ class FloatingInputWindow: NSPanel {
             if self.isKeyWindow && self.firstResponder === self.inputField {
                 timer.invalidate()
             } else {
+                self.orderFrontRegardless()
                 self.makeKeyAndOrderFront(nil)
+                NSRunningApplication.current.activate()
                 self.makeFirstResponder(self.inputField)
             }
             if attempts >= 10 { timer.invalidate() }
