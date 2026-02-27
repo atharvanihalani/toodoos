@@ -639,8 +639,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var lastHotkeyTime: Date = .distantPast
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        NSApp.setActivationPolicy(.accessory)
-
+        // Activation policy is handled by LSUIElement=true in the .app bundle's Info.plist.
+        // Do NOT call setActivationPolicy(.accessory) — it restricts window rendering on macOS 26+.
         log("Toodoos starting up")
 
         inputWindow = FloatingInputWindow()

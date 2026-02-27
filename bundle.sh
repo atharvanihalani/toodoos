@@ -10,16 +10,14 @@ CONTENTS="$APP_DIR/Contents"
 MACOS="$CONTENTS/MacOS"
 RESOURCES="$CONTENTS/Resources"
 
-# Clean previous
-rm -rf "$APP_DIR"
-
-# Create .app structure
+# Create .app structure only if it doesn't exist yet (preserves accessibility permissions)
 mkdir -p "$MACOS" "$RESOURCES"
 
-# Copy binary
-cp .build/release/Toodoos "$MACOS/$APP_NAME"
+# Overwrite binary in-place
+cp -f .build/release/Toodoos "$MACOS/$APP_NAME"
 
-# Info.plist
+# Write Info.plist only if missing
+if [ ! -f "$CONTENTS/Info.plist" ]; then
 cat > "$CONTENTS/Info.plist" << 'EOF'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -48,8 +46,9 @@ cat > "$CONTENTS/Info.plist" << 'EOF'
 </dict>
 </plist>
 EOF
+fi
 
-echo "Created $APP_DIR"
+echo "Updated $APP_DIR"
 echo ""
 echo "To launch: open $APP_DIR"
 echo "To auto-start: add Toodoos to System Settings → General → Login Items"
