@@ -652,6 +652,20 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             self?.handleHotkey()
         }
 
+        // Auto-restart on wake — macOS 26 invalidates the window server connection after sleep
+        NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didWakeNotification,
+            object: nil,
+            queue: .main
+        ) { _ in
+            log("System woke from sleep, restarting in 2s...")
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+                log("Restarting now")
+                execv(CommandLine.unsafeArgv[0]!, CommandLine.unsafeArgv)
+                log("execv failed — this should never happen")
+            }
+        }
+
         log("Toodoos ready")
     }
 
