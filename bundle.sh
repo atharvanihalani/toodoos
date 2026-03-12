@@ -28,7 +28,7 @@ cat > "$CONTENTS/Info.plist" << 'EOF'
     <key>CFBundleDisplayName</key>
     <string>Toodoos</string>
     <key>CFBundleIdentifier</key>
-    <string>com.atharva.toodoos</string>
+    <string>com.toodoos.app</string>
     <key>CFBundleVersion</key>
     <string>1.0</string>
     <key>CFBundleShortVersionString</key>
