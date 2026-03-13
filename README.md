@@ -1,6 +1,6 @@
 # toodoos
 
-Minimal todos app for MacOS. Cmd+Ctrl+T summons a floating input bar — type a thought, hit enter, it's saved. That's it.
+Minimal todos app for MacOS. Cmd+Ctrl+T summons a floating input bar — type a thought, hit enter, it's saved.
 
 Cmd+Ctrl+T x2 to view, edit, and delete your todos.
 
@@ -19,7 +19,7 @@ cd toodoos
 open ~/Applications/Toodoos.app
 ```
 
-On first launch, macOS will ask for Accessibility permission (needed for the global hotkey). Grant it.
+On first launch, macOS will ask for Accessibility permission (needed for the global hotkey). 
 
 To start on login: System Settings > General > Login Items > add Toodoos.
 
@@ -34,4 +34,4 @@ To start on login: System Settings > General > Login Items > add Toodoos.
 | `Cmd+Z` | Undo delete |
 | Arrow keys | Navigate todo list |
 
-Todos are stored as plain markdown in `~/.toodoos.md`. Edit it with whatever you want.
+Todos are stored as plain markdown in `~/.toodoos.md`. Edit it directly if you want!
