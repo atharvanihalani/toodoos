@@ -492,11 +492,11 @@ class TodoListWindow: NSPanel {
 extension TodoListWindow: NSTextFieldDelegate {
     func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
         if commandSelector == #selector(moveUp(_:)) {
-            focusRow(max(0, focusedIndex - 1))
+            focusRow(focusedIndex > 0 ? focusedIndex - 1 : textFields.count - 1)
             return true
         }
         if commandSelector == #selector(moveDown(_:)) {
-            focusRow(min(textFields.count - 1, focusedIndex + 1))
+            focusRow(focusedIndex < textFields.count - 1 ? focusedIndex + 1 : 0)
             return true
         }
         if commandSelector == #selector(cancelOperation(_:)) {
